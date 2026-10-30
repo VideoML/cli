@@ -203,6 +203,8 @@ program
   .requiredOption("--frames <dir>", "Output directory for PNG frames")
   .requiredOption("--out <path>", "Output MP4 path")
   .option("--timeline <path>", "Optional timeline.json for duration data")
+  .option("--resolved-timing <path>", "Frozen resolved timing JSON")
+  .option("--resolved-root <path>", "Root directory for frozen audio paths")
   .option("--audio <path>", "Optional audio file path")
   .option("--title <text>", "Storyboard title")
   .option("--subtitle <text>", "Storyboard subtitle")
@@ -234,6 +236,8 @@ program
 
     const script = JSON.parse(readFileSync(scriptPath, "utf8")) as ScriptData;
     const timeline = timelinePath ? (JSON.parse(readFileSync(timelinePath, "utf8")) as TimelineData) : null;
+    if (opts.resolvedTiming && !opts.resolvedRoot) throw new BabulusError("--resolved-root is required with --resolved-timing");
+    const resolvedTiming = opts.resolvedTiming ? JSON.parse(readFileSync(resolve(process.cwd(), opts.resolvedTiming), "utf8")) : null;
     const endFrame = opts.end == null ? undefined : Number(opts.end);
     const fps = opts.fps == null ? undefined : Number(opts.fps);
     const width = opts.width == null ? undefined : Number(opts.width);
@@ -247,6 +251,8 @@ program
     await renderVideoFromScript({
       script,
       timeline,
+      resolvedTiming,
+      resolvedTimingRoot: opts.resolvedRoot ? resolve(process.cwd(), opts.resolvedRoot) : undefined,
       title: opts.title,
       subtitle: opts.subtitle,
       debugLayout: !!opts.debugLayout,
@@ -294,7 +300,7 @@ program
     const { scriptOut, timelineOut, audioOut, outDir } = defaultsForComposition(comp.id, dslPath, projectDir, {});
     const config = loadConfig(projectDir, dslPath);
 
-    await generateComposition({
+    const generated = await generateComposition({
       composition: comp,
       dslPath,
       scriptOut,
@@ -315,13 +321,17 @@ program
 
     const script = JSON.parse(readFileSync(scriptOut, "utf8")) as ScriptData;
     const timeline = JSON.parse(readFileSync(timelineOut, "utf8")) as TimelineData;
+    if (!generated.resolvedTimingPath) throw new BabulusError("Generation did not produce frozen timing");
+    const resolvedTiming = JSON.parse(readFileSync(generated.resolvedTimingPath, "utf8"));
 
     await renderVideoFromScript({
       script,
       timeline,
+      resolvedTiming,
+      resolvedTimingRoot: outDir,
       framesDir,
       outputPath,
-      audioPath: audioOut,
+      audioPath: generated.frozenAudioPath,
       framePattern: "frame-%06d.png",
       startFrame: 0,
       endFrame: undefined,
