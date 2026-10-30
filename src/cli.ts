@@ -1,14 +1,47 @@
 #!/usr/bin/env -S node --import tsx
 
 import { Command } from "commander";
-import { existsSync, statSync, readdirSync } from "fs";
+import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
 import chokidar from "chokidar";
-import { loadVideoFile, generateComposition, loadConfig, findProjectRoot, BabulusError, renderVideoFromScript, type CompositionSpec, type ScriptData, type TimelineData } from "@videoml/toolchain";
+import { loadVideoFile, generateComposition, GenerationSession, AuritusProvider, loadConfig, findProjectRoot, BabulusError, renderVideoFromScript, type CompositionSpec, type ScriptData, type TimelineData } from "@videoml/toolchain";
 import { readFileSync } from "fs";
+import { spawn } from "node:child_process";
+import { speechSetupCommand } from "./speech-setup.js";
 
 const program = new Command();
 program.name("vml").description("VideoML CLI");
+
+
+program.command("init").description("Create a new VideoML project configuration")
+  .option("--project-dir <path>", "Project directory", ".")
+  .action((opts) => {
+    const dir = resolve(opts.projectDir, ".videoml"); const file = join(dir, "config.yml");
+    if (existsSync(file) || existsSync(resolve(opts.projectDir, ".babulus", "config.yml"))) throw new BabulusError(`Project configuration already exists in ${opts.projectDir}`);
+    mkdirSync(dir, {recursive:true});
+    writeFileSync(file, "tts:\n  default_provider: auritus\nproviders:\n  auritus:\n    python: python3\n    voice: kokoro:af_heart\n    speed: 1\n    seed: 0\n", {flag:"wx"});
+    console.log(`Created ${file}`);
+  });
+program.command("speech-setup").description("Explicitly download the local Kokoro model and selected voice")
+  .option("--python <path>", "Python with Auritus and huggingface_hub installed")
+  .option("--voice <voice>", "Voice")
+  .option("--project-dir <path>", "Project root")
+  .action(async opts => {
+    const config = loadConfig(opts.projectDir); const providers = config.providers as Record<string, any> | undefined;
+    const python = opts.python ?? providers?.auritus?.python ?? "python3";
+    const setup = speechSetupCommand(python, opts.voice ?? providers?.auritus?.voice ?? "kokoro:af_heart");
+    const child = spawn(setup.command, setup.args, {stdio:"inherit",env:setup.env});
+    await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new BabulusError(`Model setup exited ${code}`))); });
+    const check = new AuritusProvider(python, providers?.auritus?.voices_dir);
+    try { const caps = await check.capabilities(opts.voice ?? providers?.auritus?.voice ?? "kokoro:af_heart"); if (!caps.ready || caps.backend !== "kokoro" || caps.extensions?.["auritus.simulation"]?.simulated === true) throw new BabulusError(`Model setup incomplete: ${caps.cacheDisabledReason ?? "backend not ready"}`); console.log(JSON.stringify(caps, null, 2)); }
+    finally { await check.dispose(); }
+  });
+program.command("speech-diagnostics").description("Inspect installed local speech capabilities without downloading")
+  .option("--python <path>", "Python executable")
+  .option("--voice <voice>", "Voice")
+  .option("--voices-dir <path>", "Voices directory")
+  .option("--project-dir <path>", "Project root")
+  .action(async opts => { const config=loadConfig(opts.projectDir); const providers=config.providers as Record<string, any> | undefined; const auritus=providers?.auritus ?? {}; const provider = new AuritusProvider(opts.python ?? auritus.python ?? "python3", opts.voicesDir ?? auritus.voices_dir); try { console.log(JSON.stringify(await provider.capabilities(opts.voice ?? auritus.voice ?? "kokoro:af_heart"), null, 2)); } finally { await provider.dispose(); } });
 
 program
   .command("generate")
@@ -51,7 +84,13 @@ program
 
     const config = loadConfig(projectDir, dslPaths[0]);
 
+    let stopWatch: (() => void) | undefined;
     const runOnce = async (dslSubset?: string[]) => {
+      const generationSession = new GenerationSession();
+      const cancel = () => { generationSession.cancel(); stopWatch?.(); process.exitCode = 130; };
+      process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
+      let primaryError: unknown;
+      try {
       for (const run of runs) {
         if (dslSubset && !dslSubset.includes(run.path)) {
           continue;
@@ -63,6 +102,7 @@ program
             console.error(`[${ts}] ${comp.id}: ${msg}`);
           };
           await generateComposition({
+            generationSession,
             composition: comp,
             dslPath: run.path,
             scriptOut,
@@ -80,6 +120,11 @@ program
             verboseLogs: !opts.quiet,
           });
         }
+      }
+      } catch (error) { primaryError = error; throw error; }
+      finally {
+        process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel);
+        try { await generationSession.dispose(); } catch (error) { if (!primaryError) throw error; }
       }
     };
 
@@ -103,12 +148,15 @@ program
       ignored: ["**/node_modules/**", "**/.git/**", "**/.babulus/out/**", "**/.videoml/out/**", "**/dist/**"],
     });
 
+    stopWatch = () => { void watcher.close(); };
     console.error("Watching for changes... (Ctrl+C to stop)\n");
     if (!opts.quiet) {
       console.error(`Watching directories:\n${watchDirs.map(d => `  - ${d}`).join('\n')}\n`);
     }
 
-    watcher.on("all", async (_event, changedPath) => {
+    let watchQueue: Promise<void> = Promise.resolve();
+    watcher.on("all", (_event, changedPath) => {
+      watchQueue = watchQueue.then(async () => {
       const absChanged = resolve(cwd, changedPath);
       const rel = absChanged.startsWith(cwd) ? absChanged.slice(cwd.length + 1) : absChanged;
 
@@ -145,6 +193,7 @@ program
         console.error("\nWaiting for changes... (Ctrl+C to stop)\n");
         return;
       }
+      }).catch(err => { console.error(err); });
     });
   });
 
