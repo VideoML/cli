@@ -250,6 +250,7 @@ program
 
     await renderVideoFromScript({
       script,
+      assetBaseDir: dirname(scriptPath),
       timeline,
       resolvedTiming,
       resolvedTimingRoot: opts.resolvedRoot ? resolve(process.cwd(), opts.resolvedRoot) : undefined,
@@ -326,6 +327,7 @@ program
 
     await renderVideoFromScript({
       script,
+      assetBaseDir: dirname(scriptOut),
       timeline,
       resolvedTiming,
       resolvedTimingRoot: outDir,
