@@ -9,6 +9,7 @@
   "dependencies": {
     "chokidar": "^3.6.0",
     "commander": "^12.1.0",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "@videoml/toolchain": "0.0.0"
   }
 }
