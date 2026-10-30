@@ -1,17 +1,10 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env -S node --import tsx
 
 import { Command } from "commander";
 import { existsSync, statSync, readdirSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
 import chokidar from "chokidar";
-import type { CompositionSpec } from "../../../src/dsl/types.js";
-import { loadVideoFile } from "../../../src/dsl/load.js";
-import { generateComposition } from "../../../src/generate.js";
-import { loadConfig, findProjectRoot } from "../../../src/config.js";
-import { BabulusError } from "../../../src/errors.js";
-import { renderVideoFromScript } from "../../../packages/renderer/src/video-render.js";
-import type { ScriptData } from "../../../packages/shared/src/video.js";
-import type { TimelineData } from "../../../packages/shared/src/timeline.js";
+import { loadVideoFile, generateComposition, loadConfig, findProjectRoot, BabulusError, renderVideoFromScript, type CompositionSpec, type ScriptData, type TimelineData } from "@videoml/toolchain";
 import { readFileSync } from "fs";
 
 const program = new Command();
@@ -19,7 +12,7 @@ program.name("vml").description("VideoML CLI");
 
 program
   .command("generate")
-  .argument("[dsl]", "Path to .babulus.ts or .babulus.xml file or directory")
+  .argument("[dsl]", "Path to .videoml.ts/.videoml.xml (or legacy .babulus.ts/.babulus.xml) file or directory")
   .option("--script-out <path>", "Output script JSON path")
   .option("--timeline-out <path>", "Output timeline JSON path")
   .option("--audio-out <path>", "Output audio path")
@@ -230,7 +223,7 @@ program
 
 program
   .command("pipeline")
-  .argument("[dsl]", "Path to .babulus.ts or .babulus.xml file or directory")
+  .argument("[dsl]", "Path to .videoml.ts/.videoml.xml (or legacy .babulus.ts/.babulus.xml) file or directory")
   .option("--out <path>", "Output MP4 path")
   .option("--frames <dir>", "Output directory for PNG frames")
   .option("--project-dir <path>", "Project root directory (prefix for outputs)")
@@ -320,10 +313,10 @@ function resolveDslPaths(dslArg: string | undefined, cwd: string): string[] {
   }
   const auto = discoverProjectDsls(cwd);
   if (auto.length === 0) {
-    throw new BabulusError("No .babulus.ts or .babulus.xml files found. Pass a file or directory path, or create one under ./content/");
+    throw new BabulusError("No .videoml.ts/.videoml.xml or legacy .babulus.ts/.babulus.xml files found. Pass a file or directory path, or create one under ./content/");
   }
   if (auto.length > 1) {
-    throw new BabulusError(`Multiple .babulus.ts/.babulus.xml files found (${auto.length}). Pass a specific file or directory path.`);
+    throw new BabulusError(`Multiple VideoML or legacy Babulus DSL files found (${auto.length}). Pass a specific file or directory path.`);
   }
   return [auto[0]];
 }
@@ -347,7 +340,7 @@ function findDslFiles(root: string, recursive = true): string[] {
       }
       continue;
     }
-    if (entry.isFile() && (entry.name.endsWith(".babulus.ts") || entry.name.endsWith(".babulus.xml"))) {
+    if (entry.isFile() && ([".videoml.ts", ".videoml.xml", ".babulus.ts", ".babulus.xml"].some((suffix) => entry.name.endsWith(suffix)))) {
       out.push(full);
     }
   }
