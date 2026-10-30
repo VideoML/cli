@@ -1,0 +1,3 @@
+# Offline Kokoro narration fixture
+
+`offline-kokoro.xml` is a short real-speech fixture. It is intentionally not a mocked CI test: run it only after explicitly installing the Auritus runtime, English language and phonemizer assets, and Kokoro model and selected voice. Disable provider credentials and deny outbound network access at the operating-system boundary while running the pipeline. Inspect the frozen timing and provenance, verify the WAV sample count and hashes, and listen to the entire clip including the opening and closing sentences. Do not report a successful build or a fake backend as real speech verification.
