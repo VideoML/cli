@@ -4,9 +4,10 @@ import { Command } from "commander";
 import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
 import chokidar from "chokidar";
-import { loadVideoFile, generateComposition, GenerationSession, AuritusProvider, loadConfig, findProjectRoot, BabulusError, renderVideoFromScript, importPortableBundle, validatePortableBundle, exportPortableBundle, renderPortableBundle, createPortableLock, type CompositionSpec, type ScriptData, type TimelineData } from "@videoml/toolchain";
+import { loadVideoFile, generateComposition, GenerationSession, AuritusProvider, loadConfig, findProjectRoot, BabulusError, renderVideoFromScript, importPortableBundle, validatePortableBundle, exportPortableBundle, renderPortableBundle, createPortableLock, collectRuntimeTargetDescriptor, type CompositionSpec, type ScriptData, type TimelineData } from "@videoml/toolchain";
 import { readFileSync, openSync, fstatSync, closeSync, readSync, constants } from "fs";
 import { spawn } from "node:child_process";
+import { readRuntimeTarget } from "./runtime-target-file.js";
 import { speechSetupCommand } from "./speech-setup.js";
 
 const program = new Command();
@@ -360,8 +361,13 @@ async function withBundleSignals<T>(run:(signal:AbortSignal)=>Promise<T>):Promis
 }
 
 const bundle = program.command("bundle").description("Validate and import portable VideoML bundles");
-bundle.command("lock").requiredOption("--source <directory>").requiredOption("--entry <path>").option("--execute-source", "Explicitly execute trusted local source").option("--source-file <path>", "Include a source closure file", (value:string,previous:string[])=>[...previous,value], []).option("--composition <id>").option("--python <executable>").option("--out <path>", "Create a new lock file").action(async opts => withBundleSignals(async signal => {
-  const lock=await createPortableLock({source:resolve(opts.source),entry:opts.entry,composition:opts.composition,python:opts.python,executeSource:opts.executeSource,sourceClosure:opts.sourceFile,signal});const json=JSON.stringify(lock,null,2)+"\n";
+bundle.command("runtime-lock").option("--out <path>","Create a new runtime descriptor file").action(async opts => withBundleSignals(async signal=>{
+  const descriptor=await collectRuntimeTargetDescriptor(signal);if(signal.aborted)throw new Error('BUNDLE_CANCELLED');const json=JSON.stringify(descriptor,null,2)+"\n";
+  if(Buffer.byteLength(json)>1024*1024)throw new Error('BUNDLE_RUNTIME_TARGET: descriptor exceeds 1 MiB');
+  if(opts.out)writeFileSync(resolve(opts.out),json,{flag:'wx',mode:0o600});else process.stdout.write(json);
+}));
+bundle.command("lock").option("--runtime-target <path>","Merge a collected foreign runtime descriptor",(value:string,previous:string[])=>[...previous,value],[]).requiredOption("--source <directory>").requiredOption("--entry <path>").option("--execute-source", "Explicitly execute trusted local source").option("--source-file <path>", "Include a source closure file", (value:string,previous:string[])=>[...previous,value], []).option("--composition <id>").option("--python <executable>").option("--out <path>", "Create a new lock file").action(async opts => withBundleSignals(async signal => {
+  const lock=await createPortableLock({source:resolve(opts.source),entry:opts.entry,composition:opts.composition,python:opts.python,executeSource:opts.executeSource,sourceClosure:opts.sourceFile,runtimeTargets:opts.runtimeTarget.map(readRuntimeTarget) as any,signal});const json=JSON.stringify(lock,null,2)+"\n";
   if(signal.aborted)throw new Error('BUNDLE_CANCELLED');if(opts.out)writeFileSync(resolve(opts.out),json,{flag:'wx',mode:0o600});else process.stdout.write(json);
 }));
 function readEffectMetadata(path:string):unknown {

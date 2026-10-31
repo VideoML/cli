@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "vml": "src/cli.ts"
+    "vml": "src/cli.mjs"
   },
   "scripts": {
     "test:speech-setup": "node --import tsx --test tests/speech-setup.test.ts"
