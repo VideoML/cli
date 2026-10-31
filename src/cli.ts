@@ -4,7 +4,7 @@ import { Command } from "commander";
 import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
 import chokidar from "chokidar";
-import { loadVideoFile, generateComposition, GenerationSession, AuritusProvider, loadConfig, findProjectRoot, BabulusError, renderVideoFromScript, type CompositionSpec, type ScriptData, type TimelineData } from "@videoml/toolchain";
+import { loadVideoFile, generateComposition, GenerationSession, AuritusProvider, loadConfig, findProjectRoot, BabulusError, renderVideoFromScript, importPortableBundle, validatePortableBundle, exportPortableBundle, renderPortableBundle, createPortableLock, type CompositionSpec, type ScriptData, type TimelineData } from "@videoml/toolchain";
 import { readFileSync } from "fs";
 import { spawn } from "node:child_process";
 import { speechSetupCommand } from "./speech-setup.js";
@@ -352,13 +352,47 @@ program
     console.error(`write: ${outputPath}`);
   });
 
+async function withBundleSignals<T>(run:(signal:AbortSignal)=>Promise<T>):Promise<T> {
+  const controller=new AbortController();let received:'SIGINT'|'SIGTERM'|undefined;
+  const onInt=()=>{received??='SIGINT';controller.abort();},onTerm=()=>{received??='SIGTERM';controller.abort();};
+  process.on('SIGINT',onInt);process.on('SIGTERM',onTerm);
+  try{return await run(controller.signal);}catch(error){if(received)process.exitCode=received==='SIGINT'?130:143;throw error;}finally{process.removeListener('SIGINT',onInt);process.removeListener('SIGTERM',onTerm);}
+}
+
+const bundle = program.command("bundle").description("Validate and import portable VideoML bundles");
+bundle.command("lock").requiredOption("--source <directory>").requiredOption("--entry <path>").option("--execute-source", "Explicitly execute trusted local source").option("--source-file <path>", "Include a source closure file", (value:string,previous:string[])=>[...previous,value], []).option("--composition <id>").option("--python <executable>").option("--out <path>", "Create a new lock file").action(async opts => withBundleSignals(async signal => {
+  const lock=await createPortableLock({source:resolve(opts.source),entry:opts.entry,composition:opts.composition,python:opts.python,executeSource:opts.executeSource,sourceClosure:opts.sourceFile,signal});const json=JSON.stringify(lock,null,2)+"\n";
+  if(signal.aborted)throw new Error('BUNDLE_CANCELLED');if(opts.out)writeFileSync(resolve(opts.out),json,{flag:'wx',mode:0o600});else process.stdout.write(json);
+}));
+bundle.command("export").requiredOption("--trust <mode>", "Must be local").option("--execute-source", "Explicitly execute trusted local source").option("--source-file <path>", "Include a source closure file", (value:string,previous:string[])=>[...previous,value], []).option("--browser-entry <path>", "Trusted browser factory source in the closure").option("--component <id@version>", "Declare a custom component identity", (value:string,previous:string[])=>[...previous,value], []).requiredOption("--source <directory>").requiredOption("--destination <path>").requiredOption("--entry <path>", "Source path within directory").requiredOption("--script <path>", "Generated script path within directory").requiredOption("--timing <path>", "Frozen timing path within directory").requiredOption("--project-id <id>").option("--toolchain-version <version>", "Optional compatibility check against the executing package").option("--zip", "Export as a ZIP archive").option("--audio <path>", "Assembled frozen audio path within directory").option("--composition <id>", "Required for multi-composition sources").option("--notice <path>", "Explicit bundled notice path", (value:string,previous:string[])=>[...previous,value], []).option("--python <executable>", "Trusted Python 3.9+ executable").action(async opts => withBundleSignals(async signal => {
+  if(opts.trust!=="local") throw new Error("BUNDLE_TRUST_REQUIRED: export requires local trust");
+  const manifest=await exportPortableBundle({source:resolve(opts.source),destination:resolve(opts.destination),entry:opts.entry,script:opts.script,timing:opts.timing,audio:opts.audio,composition:opts.composition,projectId:opts.projectId,toolchainVersion:opts.toolchainVersion,executeSource:opts.executeSource,sourceClosure:opts.sourceFile,browserEntry:opts.browserEntry,customComponents:opts.component.map((value:string)=>{const at=value.lastIndexOf('@');if(at<1||at===value.length-1)throw new Error('BUNDLE_SOURCE: component must be id@version');return {id:value.slice(0,at),version:value.slice(at+1)};}),notices:opts.notice,format:opts.zip?"zip":"directory",python:opts.python,signal,trust:"local"});
+  console.log(JSON.stringify({contentDigest:manifest.manifest.contentDigest,compositionId:manifest.manifest.composition.id,hostedEligibility:manifest.hostedEligibility,sourceVerification:manifest.sourceVerification}));
+}));
+bundle.command("render").requiredOption("--source <path>").requiredOption("--trust <mode>", "local or hosted").option("--execute-source", "Explicitly execute trusted local source").requiredOption("--frames <directory>").requiredOption("--out <path>").option("--zip", "Input is a ZIP archive").option("--digest <sha256>").option("--python <executable>").option("--ffmpeg <path>", "FFmpeg executable", "ffmpeg").action(async opts => withBundleSignals(async signal => {
+  if(opts.trust!=="local" && opts.trust!=="hosted")throw new Error("BUNDLE_TRUST_REQUIRED: select local or hosted");
+  await renderPortableBundle({source:resolve(opts.source),sourceKind:opts.zip?"zip":"directory",trust:opts.trust,executeSource:opts.executeSource,expectedDigest:opts.digest,python:opts.python,signal,framesDir:resolve(opts.frames),outputPath:resolve(opts.out),ffmpegPath:opts.ffmpeg});
+  console.error(`write: ${resolve(opts.out)}`);
+}));
+bundle.command("validate").requiredOption("--source <path>").requiredOption("--trust <mode>", "local or hosted").option("--execute-source", "Explicitly execute trusted local source").option("--zip", "Input is a ZIP archive").option("--digest <sha256>", "Expected content digest").option("--python <executable>", "Trusted Python 3.9+ executable").action(async opts => withBundleSignals(async signal => {
+  if (opts.trust !== "local" && opts.trust !== "hosted") throw new Error("BUNDLE_TRUST_REQUIRED: select local or hosted");
+  const manifest = await validatePortableBundle({source:resolve(opts.source), sourceKind:opts.zip ? "zip" : "directory", trust:opts.trust, executeSource:opts.executeSource, expectedDigest:opts.digest, python:opts.python,signal});
+  console.log(JSON.stringify({contentDigest:manifest.manifest.contentDigest, compositionId:manifest.manifest.composition.id, hostedEligibility:manifest.hostedEligibility,sourceVerification:manifest.sourceVerification}));
+}));
+bundle.command("import").requiredOption("--source <path>").requiredOption("--destination <path>").requiredOption("--trust <mode>", "local or hosted").option("--execute-source", "Explicitly execute trusted local source").option("--zip", "Input is a ZIP archive").option("--digest <sha256>", "Expected content digest").option("--python <executable>", "Trusted Python 3.9+ executable").action(async opts => withBundleSignals(async signal => {
+  if (opts.trust !== "local" && opts.trust !== "hosted") throw new Error("BUNDLE_TRUST_REQUIRED: select local or hosted");
+  const manifest = await importPortableBundle({source:resolve(opts.source),destination:resolve(opts.destination),sourceKind:opts.zip ? "zip" : "directory",trust:opts.trust,executeSource:opts.executeSource,expectedDigest:opts.digest,python:opts.python,signal});
+  console.log(JSON.stringify({contentDigest:manifest.manifest.contentDigest, compositionId:manifest.manifest.composition.id, hostedEligibility:manifest.hostedEligibility,sourceVerification:manifest.sourceVerification}));
+}));
+
 program.parseAsync(process.argv).catch((err) => {
   if (err instanceof BabulusError) {
     console.error(err.message);
-    process.exit(2);
+    process.exitCode=process.exitCode??2;
+    return;
   }
   console.error(err);
-  process.exit(1);
+  process.exitCode=process.exitCode??1;
 });
 
 function resolveDslPaths(dslArg: string | undefined, cwd: string): string[] {
